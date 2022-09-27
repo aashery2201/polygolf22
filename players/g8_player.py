@@ -435,13 +435,14 @@ class Player:
                         target_point = current_point + u * (original_dist * .95)
                     else:
                         target_point = current_point + u * (original_dist * 1)
+                
         cx, cy = current_point
         tx, ty = target_point
         angle = np.arctan2(ty - cy, tx - cx)
 
         rv = curr_loc.distance(Point2D(target_point, evaluate=False)), angle
         if original_dist < 20 and in_sand == False and rv[0] > 20:
-            rv = 19.99, angle
+            rv = 19.9, angle
         self.prev_rv = rv
         return rv
         
