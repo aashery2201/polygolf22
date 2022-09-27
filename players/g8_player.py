@@ -18,21 +18,18 @@ from scipy.spatial.distance import cdist
 # Cached distribution
 DIST = scipy_stats.norm(0, 1)
 
-#Sampling Size
-#SAMPLE_SIZE = 0
+# Sampling Size
 SAMPLE_SIZE = 250
 
 @functools.lru_cache()
 def standard_ppf(conf: float) -> float:
     return DIST.ppf(conf)
 
-
 def result_point(distance: float, angle: float, current_point: Tuple[float, float]) -> Tuple[float, float]:
     cx, cy = current_point
     nx = cx + distance * np.cos(angle)
     ny = cy + distance * np.sin(angle)
     return nx, ny
-
 
 def spread_points(current_point, angles: np.array, distance, reverse) -> np.array:
     curr_x, curr_y = current_point
@@ -58,41 +55,27 @@ def sympy_poly_to_shapely(sympy_poly: Polygon) -> ShapelyPolygon:
 
 class ScoredPoint:
     """Scored point class for use in A* search algorithm"""
-    def __init__(self, point: Tuple[float, float], goal: Tuple[float, float], actual_cost=float('inf'), previous=None, goal_dist=None, skill=50, in_sandtrap = False):
+    def __init__(self, point: Tuple[float, float], actual_cost=float('inf'), previous=None, next=None, skill=50, in_sandtrap = False):
         self.point = point
-        self.goal = goal
 
         self.previous = previous
+        self.next = next
 
+        #actual_cost will be the Expected number of shots to the Goal
         self._actual_cost = actual_cost
-        if goal_dist is None:
-            a = np.array(self.point)
-            b = np.array(self.goal)
-            goal_dist = np.linalg.norm(a - b)
 
         max_target_dist = 200 + skill
         max_dist = standard_ppf(0.99) * (max_target_dist / skill) + max_target_dist
         max_dist *= 1.10
-        self._h_cost = goal_dist / max_dist
-
-        self._f_cost = self.actual_cost + self.h_cost
 
         self.in_sandtrap = in_sandtrap
-
-    @property
-    def f_cost(self):
-        return self._f_cost
-
-    @property
-    def h_cost(self):
-        return self._h_cost
 
     @property
     def actual_cost(self):
         return self._actual_cost
 
     def __lt__(self, other):
-        return self.f_cost < other.f_cost
+        return self.actual_cost < other.actual_cost
 
     def __eq__(self, other):
         return self.point == other.point
@@ -149,15 +132,19 @@ class Player:
         self.max_ddist = scipy_stats.norm(max_dist, max_dist / self.skill)
 
         self.np_sand_trap_points = None
+        self.sandtrap_points_set = set()
+
+        self.sandtrap_mask = None
+        self.inverted_sandtrap_mask = None
+
         self.mpl_sand_polys = None
         self.max_sand_ddist = scipy_stats.norm(max_dist / 2, (max_dist / self.skill)*2)
 
         #hash data for ev(a,b), key = (origin, dest), eg. ((1,1), (2,2)), value = EV((1,1,), (2,2))
         self.ev_hash = {}
 
-
         #hash data, key = (scored_point), value = next optimal point from scored_point
-        self.optimal_next = {}
+        self.best_cost_to_goal = {}
 
     def numpy_adjacent_and_dist (self, point: Tuple[float, float]):
         cloc_distances = cdist(self.np_map_points, np.array([np.array(point)]), 'euclidean')
@@ -172,8 +159,8 @@ class Player:
         else:
             reachable_points = self.np_map_points[distance_mask]
         
-        goal_distances = self.np_goal_dist[distance_mask]
-        return reachable_points, goal_distances
+        #goal_distances = self.np_goal_dist[distance_mask]
+        return reachable_points
     
     def point_in_sandtrap_mpl(self, current_point: Tuple[float, float]) -> bool:
         for sandtrap in self.mpl_sand_polys:
@@ -182,70 +169,27 @@ class Player:
         
         return False
 
-    def next_target(self, curr_loc: Tuple[float, float], goal: Point2D) -> Union[None, Tuple[float, float]]:
-        point_goal = float(goal.x), float(goal.y)
-        heap = [ScoredPoint(curr_loc, point_goal, 0.0)]
-        start_point = heap[0].point
+    def next_target(self, curr_loc: Tuple[float, float]) -> Union[None, Tuple[float, float]]:
 
-        # Used to cache the best cost and avoid adding useless points to the heap
-        best_cost = {tuple(curr_loc): 0.0}
-        visited = set()
-        points_checked = 0
-        while len(heap) > 0:
-            next_sp = heapq.heappop(heap)
-            next_p = next_sp.point
+        lowest_ev_value = float("inf")
+        lowest_ev_point = None
+        
+        reachable_points = self.numpy_adjacent_and_dist(curr_loc)
+        for i in range(len(reachable_points)):
+            candidate_point = tuple(reachable_points[i])
+            #print(candidate_point)
 
+            marginal_ev_of_hits_to_candidate_point = self.get_ev(curr_loc, candidate_point, self.skill, self.point_in_sandtrap_mpl(curr_loc))
+            self.ev_hash[(curr_loc,candidate_point)] = marginal_ev_of_hits_to_candidate_point
 
-            if next_p in visited:
-                continue
-            if next_sp.actual_cost > 10:
-                continue
-            
-            """
-            if next_sp.actual_cost > 0 and not self.splash_zone_within_polygon(next_sp.previous.point, next_p, conf):
+            ev_value = marginal_ev_of_hits_to_candidate_point + self.best_cost_to_goal[candidate_point]
 
-                #if we have already seen a quicker way to get to next_p
-                if next_p in best_cost:
-                    del best_cost[next_p]
-                continue
-            """
-            visited.add(next_p)
-
-            if np.linalg.norm(np.array(self.goal) - np.array(next_p)) <= 5.4 / 100.0:
-                # All we care about is the next point
-                # TODO: We need to check if the path length is <= 10, because if it isn't we probably need to
-                #  reduce the conf and try again for a shorter path.
-                while next_sp.previous.point != start_point:
-                    next_sp = next_sp.previous
-                return next_sp.point
-            
-            # Add adjacent points to heap
-            reachable_points, goal_dists = self.numpy_adjacent_and_dist(next_p)
-            for i in range(len(reachable_points)):
-                candidate_point = tuple(reachable_points[i])
-                goal_dist = goal_dists[i]
-
-                marginal_ev_of_hits_to_candidate_point = None
-
-                if (next_p,candidate_point) in self.ev_hash:
-                    marginal_ev_of_hits_to_candidate_point = self.ev_hash[(next_p,candidate_point)]
-                else:
-                    marginal_ev_of_hits_to_candidate_point = self.get_ev(next_sp.point, candidate_point, self.skill, self.point_in_sandtrap_mpl(next_sp.point))
-                    self.ev_hash[(next_p,candidate_point)] = marginal_ev_of_hits_to_candidate_point
-
-                new_point = ScoredPoint(candidate_point, point_goal, next_sp.actual_cost + marginal_ev_of_hits_to_candidate_point, next_sp,
-                                        goal_dist=goal_dist, skill=self.skill)
-
-                if candidate_point not in best_cost or best_cost[candidate_point] > new_point.actual_cost:
-                    points_checked += 1
-                    # if not self.splash_zone_within_polygon(new_point.previous.point, new_point.point, conf):
-                    #     continue
-                    best_cost[new_point.point] = new_point.actual_cost
-                    heapq.heappush(heap, new_point)
-
-        # No path available
-        print(reachable_points)
-        return None
+            if ev_value < lowest_ev_value:
+                lowest_ev_value = ev_value
+                lowest_ev_point = candidate_point
+        
+        return lowest_ev_point
+        
 
     def _initialize_map_points(self, goal: Tuple[float, float], golf_map: Polygon, sand_traps: list[sympy.Polygon]):
         # Storing the points as numpy array
@@ -271,6 +215,7 @@ class Player:
                 if sandtrap.contains_point(point):
                     x, y = point
                     np_sand_trap_points.append(np.array([x, y]))
+                    self.sandtrap_points_set.add(point)
 
         #add points along edges of map  
         np_map_points += self.polygon_edge_sampler(golf_map, 5)
@@ -283,10 +228,89 @@ class Player:
             np_map_points += temp
             np_sand_trap_points += temp
 
+
         self.np_map_points = np.array(np_map_points)
         self.np_sand_trap_points = np.array(np_sand_trap_points)
         self.np_goal_dist = cdist(self.np_map_points, np.array([np.array(self.goal)]), 'euclidean')
         self.np_goal_dist = self.np_goal_dist.flatten()
+
+        self.sandtrap_mask = np.in1d(self.np_map_points, list(self.np_sand_trap_points))
+        self.inverted_sandtrap_mask = np.invert(self.sandtrap_mask)
+
+        self.a_star(goal)
+
+    def a_star(self, goal):
+
+        point_goal = goal
+
+        heap = [ScoredPoint(point=point_goal, actual_cost=0.0, previous=None, skill=self.skill)]
+
+        visited = set()
+
+        while len(heap) > 0:
+            next_sp = heapq.heappop(heap)
+            next_p = next_sp.point
+
+
+            #check if the point has been visited
+            if next_p in visited:
+                continue
+
+            #if it is greater than 10, and has not been seen before, label the point in best_cost_to_goal
+            if next_sp.actual_cost > 10:
+                self.best_cost_to_goal[next_p] = next_sp.actual_cost
+                continue
+                
+            #tag the point is visited
+            visited.add(next_p)
+            self.best_cost_to_goal[next_p] = next_sp.actual_cost
+
+            reachable_points, distance = self.astar_max_reachable_points(next_p)
+
+            #reachable points
+            for i in range(len(reachable_points)):
+
+                curr_point = reachable_points[i]
+                curr_point = tuple(curr_point)
+
+                #if we have already seen a point, skip it
+                if curr_point in visited:
+                    continue
+
+                curr_distance = distance[i]
+
+                #check sandtrap if the point is actually reachable
+                if curr_point in self.sandtrap_points_set and curr_distance > (200 + self.skill) / 2:
+                    continue
+
+                marginal_ev_of_hits_to_candidate_point = self.get_ev(curr_point, next_p, self.skill, next_p in self.sandtrap_points_set)
+                self.ev_hash[(curr_point, next_p)] = marginal_ev_of_hits_to_candidate_point
+
+                #if we have seen the best cost of this point, and the current cost is worse, skip it
+                if curr_point in self.best_cost_to_goal and self.best_cost_to_goal[curr_point] < next_sp.actual_cost + marginal_ev_of_hits_to_candidate_point:
+                    continue
+
+                #(self, point: Tuple[float, float], actual_cost=float('inf'), previous=None, skill=50, in_sandtrap = False):
+                new_point = ScoredPoint(point = curr_point,
+                                        actual_cost = next_sp.actual_cost + marginal_ev_of_hits_to_candidate_point,
+                                        next = next_p,
+                                        skill=self.skill)
+
+                self.best_cost_to_goal[curr_point] = next_sp.actual_cost + marginal_ev_of_hits_to_candidate_point
+                heapq.heappush(heap, new_point)
+
+    def astar_max_reachable_points(self, point: Tuple[float, float]):
+
+        cloc_distances = cdist(self.np_map_points, np.array([np.array(point)]), 'euclidean')
+        cloc_distances = cloc_distances.flatten()
+
+        distance_mask = cloc_distances <= 200 + self.skill
+
+        reachable_points = self.np_map_points[distance_mask]
+        distance = cloc_distances[distance_mask]
+            
+        return reachable_points, distance
+            
     
     def poly_to_points(self, poly: Polygon, mpl_poly: Path) -> list[Tuple[float, float]]:
 
@@ -362,22 +386,25 @@ class Player:
             self.goal = float(target.x), float(target.y)
             self._initialize_map_points((gx, gy), golf_map, sand_traps)
 
+        #print(self.best_cost_to_goal)
+
         # Optimization to retry missed shots
         if self.prev_rv is not None and curr_loc == prev_loc:
             return self.prev_rv
 
         target_point = None
         cl = float(curr_loc.x), float(curr_loc.y)
-        target_point = self.next_target(cl, target)
+        target_point = self.next_target(cl)
 
         # fixup target
         current_point = np.array(tuple(curr_loc)).astype(float)
         original_dist = np.linalg.norm(np.array(target_point) - current_point)
+        in_sand = self.point_in_sandtrap_mpl(current_point)
         if tuple(target_point) == self.goal:
             v = np.array(target_point) - current_point
+
             # Unit vector pointing from current to target
             u = v / original_dist
-            in_sand = self.point_in_sandtrap_mpl(current_point)
             if original_dist >= 20.0:
                 roll_distance = original_dist * 0.1
                 max_offset = roll_distance
@@ -493,7 +520,7 @@ class Player:
         
         expected_tries_to_hit_land = land_total_prob**(-1)          # if probability of hitting land is 0.25, we expect 0.25**(-1) = 4 tries to hit land
         
-        expected_value = (water_prob * expected_tries_to_hit_land) + (sand_prob * 1) + (green_prob * 1)
+        expected_value = (water_prob * expected_tries_to_hit_land) + (sand_prob * 1.1) + (green_prob * 1)
 
         return expected_value
 
