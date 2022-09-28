@@ -424,13 +424,11 @@ class Player:
         in_sand = self.point_in_sandtrap_mpl(current_point)
 
         if tuple(target_point) == self.goal:
-
             v = np.array(target_point) - current_point
             # Unit vector pointing from current to target
             u = v / original_dist
 
             if original_dist <= 20.0 and in_sand == False:
-                print("putting")
                 if self.skill >= 60:
                     target_point = current_point + u * (original_dist * 1.25)
                 elif self.skill >= 40:
@@ -528,14 +526,3 @@ class Player:
         expected_value = (water_prob * expected_tries_to_hit_land) + (sand_prob * SANDTRAP_HEURISTIC) + (green_prob * 1)
 
         return expected_value
-
-
-# === Unit Tests ===
-
-def test_poly_to_points():
-    poly = Polygon((0,0), (0, 10), (10, 10), (10, 0))
-    points = set(poly_to_points(poly))
-    for x in range(1, 10):
-        for y in range(1, 10):
-            assert (x,y) in points
-    assert len(points) == 81
