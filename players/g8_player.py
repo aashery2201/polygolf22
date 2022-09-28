@@ -429,20 +429,16 @@ class Player:
             # Unit vector pointing from current to target
             u = v / original_dist
 
-            if original_dist <= 20.0:
+            if original_dist <= 20.0 and in_sand == False:
+                print("putting")
                 if self.skill >= 60:
-                    target_point = current_point + u * (original_dist * 1.5)
+                    target_point = current_point + u * (original_dist * 1.25)
                 elif self.skill >= 40:
-                    target_point = current_point + u * (original_dist * 1.2)
-                elif self.skill >= 20:
-                    target_point = current_point + u * (original_dist * 1)
+                    target_point = current_point + u * (original_dist * 1.1)
                 else:
-                    if original_dist > 10:
-                        target_point = current_point + u * (original_dist * .9)
-                    elif original_dist > 1: 
-                        target_point = current_point + u * (original_dist * .95)
-                    else:
-                        target_point = current_point + u * (original_dist * 1)
+                    target_point = current_point + u * (original_dist * 1)
+
+                        
                 
         cx, cy = current_point
         tx, ty = target_point
@@ -450,7 +446,7 @@ class Player:
 
         rv = curr_loc.distance(Point2D(target_point, evaluate=False)), angle
         if original_dist < 20 and in_sand == False and rv[0] > 20:
-            rv = 19.9, angle
+            rv = 19.99, angle
         self.prev_rv = rv
         return rv
         
